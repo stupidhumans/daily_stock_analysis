@@ -42,6 +42,7 @@ class NotificationChannel(Enum):
     EMAIL = "email"        # 邮件
     PUSHOVER = "pushover"  # Pushover（手机/桌面推送）
     CUSTOM = "custom"      # 自定义 Webhook
+    DISCORD = "discord"    # Discord 机器人 (Bot)
     UNKNOWN = "unknown"    # 未知
 
 
@@ -87,6 +88,7 @@ class ChannelDetector:
             NotificationChannel.EMAIL: "邮件",
             NotificationChannel.PUSHOVER: "Pushover",
             NotificationChannel.CUSTOM: "自定义Webhook",
+            NotificationChannel.DISCORD: "Discord机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
@@ -146,6 +148,13 @@ class NotificationService:
         self._custom_webhook_urls = getattr(config, 'custom_webhook_urls', []) or []
         self._custom_webhook_bearer_token = getattr(config, 'custom_webhook_bearer_token', None)
         
+        # Discord 配置
+        self._discord_config = {
+            'bot_token': getattr(config, 'discord_bot_token', None),
+            'channel_id': getattr(config, 'discord_main_channel_id', None),
+            'webhook_url': getattr(config, 'discord_webhook_url', None),
+        }
+        
         # 消息长度限制（字节）
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._wechat_max_bytes = getattr(config, 'wechat_max_bytes', 4000)
@@ -192,11 +201,22 @@ class NotificationService:
         if self._custom_webhook_urls:
             channels.append(NotificationChannel.CUSTOM)
         
+        # Discord
+        if self._is_discord_configured():
+            channels.append(NotificationChannel.DISCORD)
+        
         return channels
     
     def _is_telegram_configured(self) -> bool:
         """检查 Telegram 配置是否完整"""
         return bool(self._telegram_config['bot_token'] and self._telegram_config['chat_id'])
+    
+    def _is_discord_configured(self) -> bool:
+        """检查 Discord 配置是否完整（支持 Bot 或 Webhook）"""
+        # 只要配置了 Webhook 或完整的 Bot Token+Channel，即视为可用
+        bot_ok = bool(self._discord_config['bot_token'] and self._discord_config['channel_id'])
+        webhook_ok = bool(self._discord_config['webhook_url'])
+        return bot_ok or webhook_ok
     
     def _is_email_configured(self) -> bool:
         """检查邮件配置是否完整（只需邮箱和授权码）"""
@@ -2302,6 +2322,95 @@ class NotificationService:
             "body": content
         }
     
+    def send_to_discord(self, content: str) -> bool:
+        """
+        推送消息到 Discord（支持 Webhook 和 Bot API）
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        # 优先使用 Webhook（配置简单，权限低）
+        if self._discord_config['webhook_url']:
+            return self._send_discord_webhook(content)
+        
+        # 其次使用 Bot API（权限高，需要 channel_id）
+        if self._discord_config['bot_token'] and self._discord_config['channel_id']:
+            return self._send_discord_bot(content)
+        
+        logger.warning("Discord 配置不完整，跳过推送")
+        return False
+    
+    def _send_discord_webhook(self, content: str) -> bool:
+        """
+        使用 Webhook 发送消息到 Discord
+        
+        Discord Webhook 支持 Markdown 格式
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        try:
+            payload = {
+                'content': content,
+                'username': 'A股分析机器人',
+                'avatar_url': 'https://picsum.photos/200'
+            }
+            
+            response = requests.post(
+                self._discord_config['webhook_url'],
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code in [200, 204]:
+                logger.info("Discord Webhook 消息发送成功")
+                return True
+            else:
+                logger.error(f"Discord Webhook 发送失败: {response.status_code} {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Discord Webhook 发送异常: {e}")
+            return False
+    
+    def _send_discord_bot(self, content: str) -> bool:
+        """
+        使用 Bot API 发送消息到 Discord
+        
+        Args:
+            content: Markdown 格式的消息内容
+            
+        Returns:
+            是否发送成功
+        """
+        try:
+            headers = {
+                'Authorization': f'Bot {self._discord_config["bot_token"]}',
+                'Content-Type': 'application/json'
+            }
+            
+            payload = {
+                'content': content
+            }
+            
+            url = f'https://discord.com/api/v10/channels/{self._discord_config["channel_id"]}/messages'
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("Discord Bot 消息发送成功")
+                return True
+            else:
+                logger.error(f"Discord Bot 发送失败: {response.status_code} {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Discord Bot 发送异常: {e}")
+            return False
+    
     def send(self, content: str) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送
@@ -2339,6 +2448,8 @@ class NotificationService:
                     result = self.send_to_pushover(content)
                 elif channel == NotificationChannel.CUSTOM:
                     result = self.send_to_custom(content)
+                elif channel == NotificationChannel.DISCORD:
+                    result = self.send_to_discord(content)
                 else:
                     logger.warning(f"不支持的通知渠道: {channel}")
                     result = False

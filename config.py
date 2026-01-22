@@ -85,6 +85,11 @@ class Config:
     custom_webhook_urls: List[str] = field(default_factory=list)
     custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
     
+    # Discord 通知配置
+    discord_bot_token: Optional[str] = None  # Discord Bot Token
+    discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
+    discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
     
@@ -208,6 +213,9 @@ class Config:
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
+            discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
+            discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
             wechat_max_bytes=int(os.getenv('WECHAT_MAX_BYTES', '4000')),
@@ -283,12 +291,14 @@ class Config:
         
         # 检查通知配置
         has_notification = (
-            self.wechat_webhook_url or
+            self.wechat_webhook_url or 
             self.feishu_webhook_url or
             (self.telegram_bot_token and self.telegram_chat_id) or
             (self.email_sender and self.email_password) or
             (self.pushover_user_key and self.pushover_api_token) or
-            (self.custom_webhook_urls and self.custom_webhook_bearer_token)
+            (self.custom_webhook_urls and self.custom_webhook_bearer_token) or
+            (self.discord_bot_token and self.discord_main_channel_id) or
+            self.discord_webhook_url
         )
         if not has_notification:
             warnings.append("提示：未配置通知渠道，将不发送推送通知")
